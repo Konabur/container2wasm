@@ -5,3 +5,4 @@ RUN apk add --no-cache \
     htop vim tmux curl less procps iproute2 \
     ca-certificates \
     && sed -i 's#/root:/bin/ash#/root:/bin/bash#' /etc/passwd
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8

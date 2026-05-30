@@ -1,4 +1,4 @@
-importScripts("https://cdn.jsdelivr.net/npm/xterm-pty@0.9.4/workerTools.js");
+importScripts(location.origin + "/xterm-pty-workerTools.js");
 importScripts(location.origin + "/browser_wasi_shim/index.js");
 importScripts(location.origin + "/browser_wasi_shim/wasi_defs.js");
 importScripts(location.origin + "/worker-util.js");
@@ -14,41 +14,69 @@ onmessage = (msg) => {
     var fds = [];
     var netParam = getNetParam();
     var listenfd = 3;
-    fetch(getImagename(), { credentials: 'same-origin' }).then((resp) => {
-        resp['arrayBuffer']().then((wasm) => {
-            if (netParam) {
-                if (netParam.mode == 'delegate') {
-                    args = ['arg0', '--net=socket', '--mac', genmac()];
-                } else if (netParam.mode == 'browser') {
-                    recvCert().then((cert) => {
-                        var certDir = getCertDir(cert);
-                        fds = [
-                            undefined, // 0: stdin
-                            undefined, // 1: stdout
-                            undefined, // 2: stderr
-                            certDir,   // 3: certificates dir
-                            undefined, // 4: socket listenfd
-                            undefined, // 5: accepted socket fd (multi-connection is unsupported)
-                            // 6...: used by wasi shim
-                        ];
-                        args = ['arg0', '--net=socket=listenfd=4', '--mac', genmac()];
-                        env = [
-                            "SSL_CERT_FILE=/.wasmenv/proxy.crt",
-                            "https_proxy=http://192.168.127.253:80",
-                            "http_proxy=http://192.168.127.253:80",
-                            "HTTPS_PROXY=http://192.168.127.253:80",
-                            "HTTP_PROXY=http://192.168.127.253:80"
-                        ];
-                        listenfd = 4;
-                        startWasi(wasm, ttyClient, args, env, fds, listenfd, 5);
-                    });
-                    return;
-                }
+    loadWasmFromParts(getImagename()).then((wasm) => {
+        if (netParam) {
+            if (netParam.mode == 'delegate') {
+                args = ['arg0', '--net=socket', '--mac', genmac()];
+            } else if (netParam.mode == 'browser') {
+                recvCert().then((cert) => {
+                    var certDir = getCertDir(cert);
+                    fds = [
+                        undefined, // 0: stdin
+                        undefined, // 1: stdout
+                        undefined, // 2: stderr
+                        certDir,   // 3: certificates dir
+                        undefined, // 4: socket listenfd
+                        undefined, // 5: accepted socket fd (multi-connection is unsupported)
+                        // 6...: used by wasi shim
+                    ];
+                    args = ['arg0', '--net=socket=listenfd=4', '--mac', genmac()];
+                    env = [
+                        "SSL_CERT_FILE=/.wasmenv/proxy.crt",
+                        "https_proxy=http://192.168.127.253:80",
+                        "http_proxy=http://192.168.127.253:80",
+                        "HTTPS_PROXY=http://192.168.127.253:80",
+                        "HTTP_PROXY=http://192.168.127.253:80"
+                    ];
+                    listenfd = 4;
+                    startWasi(wasm, ttyClient, args, env, fds, listenfd, 5);
+                });
+                return;
             }
-            startWasi(wasm, ttyClient, args, env, fds, listenfd, 5);
-        })
+        }
+        startWasi(wasm, ttyClient, args, env, fds, listenfd, 5);
     });
 };
+
+// loadWasmFromParts склеивает out.wasm из кусков (см. split в build.yml).
+// Читает out.wasm.parts (число кусков), фетчит out.wasm.part000, part001, ...
+// и собирает их в один ArrayBuffer. Замена прямого fetch цельного wasm —
+// нужна из-за лимита 50 МБ/файл на GitVerse Pages.
+function loadWasmFromParts(baseUrl) {
+    return fetch(baseUrl + ".parts", { credentials: 'same-origin' })
+        .then((r) => r.text())
+        .then((txt) => {
+            var n = parseInt(txt.trim(), 10);
+            var tasks = [];
+            for (var i = 0; i < n; i++) {
+                var idx = ("000" + i).slice(-3); // split -d -a 3 → part000, part001, ...
+                tasks.push(
+                    fetch(baseUrl + ".part" + idx, { credentials: 'same-origin' })
+                        .then((resp) => resp.arrayBuffer())
+                );
+            }
+            return Promise.all(tasks).then((bufs) => {
+                var total = bufs.reduce((s, b) => s + b.byteLength, 0);
+                var out = new Uint8Array(total);
+                var off = 0;
+                for (var j = 0; j < bufs.length; j++) {
+                    out.set(new Uint8Array(bufs[j]), off);
+                    off += bufs[j].byteLength;
+                }
+                return out.buffer;
+            });
+        });
+}
 
 function startWasi(wasm, ttyClient, args, env, fds, listenfd, connfd) {
     var wasi = new WASI(args, env, fds);

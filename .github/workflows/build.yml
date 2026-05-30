@@ -42,19 +42,52 @@ jobs:
           curl -sSL -o site/xterm.css      "https://cdn.jsdelivr.net/npm/xterm@4.17.0/css/xterm.css"
           curl -sSL -o site/xterm.min.js   "https://cdn.jsdelivr.net/npm/xterm@4.17.0/lib/xterm.min.js"
           curl -sSL -o site/xterm-pty.js   "https://cdn.jsdelivr.net/npm/xterm-pty@0.9.4/index.js"
+          # workerTools грузится через importScripts в worker.js — тоже локально
+          curl -sSL -o site/xterm-pty-workerTools.js "https://cdn.jsdelivr.net/npm/xterm-pty@0.9.4/workerTools.js"
 
           # наш index.html поверх примерного
           cp custom-index.html site/index.html
 
           touch site/.nojekyll
 
-          echo "=== проверка, что нет ссылок на http(s):// в html/js ==="
-          grep -rn "https\?://" site/*.html || echo "ok: внешних ссылок в html нет"
+      - name: Split wasm
+        run: |
+          cd site
+          # лимит GitVerse 50 МБ/файл → дробим по 45 МБ; split -d -a 3 → part000, part001, ...
+          split -b 45m -d -a 3 out.wasm out.wasm.part
+          ls out.wasm.part* | wc -l | tr -d ' ' > out.wasm.parts
+          echo "parts: $(cat out.wasm.parts)"
+          ls -lh out.wasm.part*
+          rm -f out.wasm
 
-          echo "=== проверка магического числа wasm ==="
-          for f in site/out.wasm site/c2w-net-proxy.wasm; do
-            printf "%s: " "$f"; head -c4 "$f" | xxd
-          done
+      - name: Verify
+        run: |
+          AUTHORED="site/index.html site/worker.js site/stack.js site/ws-delegate.js \
+                    site/stack-worker.js site/worker-util.js site/wasi-util.js"
+
+          echo "=== внешние ресурсы (script/link/importScripts/fetch на http(s)://) — hard fail ==="
+          # Ловим только реальные рантайм-загрузки с внешнего хоста. Внутренний прокси
+          # http://192.168.127.253 (netParam browser) и URL в комментариях — не запросы.
+          PAT='(src|href)[[:space:]]*=[[:space:]]*["'\'']https?://|importScripts\(["'\'']https?://|fetch\(["'\'']https?://'
+          if grep -rEn "$PAT" $AUTHORED; then
+            echo "FAIL: внешняя загрузка ресурса в авторском файле"; exit 1
+          fi
+          echo "ok: внешних загрузок в авторских html/js нет"
+
+          echo "=== (инфо) любые упоминания http(s):// в авторских файлах (комментарии/прокси) ==="
+          grep -rn "https\?://" $AUTHORED || echo "нет"
+
+          echo "=== (инфо) ссылки в vendored-библиотеках, если есть ==="
+          grep -rn "https\?://" site/xterm.min.js site/xterm-pty.js \
+               site/xterm-pty-workerTools.js site/coi-serviceworker.js || echo "нет"
+
+          echo "=== проверка магического числа \0asm после склейки кусков ==="
+          cat site/out.wasm.part* > /tmp/reassembled.wasm
+          printf "reassembled out.wasm: "; head -c4 /tmp/reassembled.wasm | xxd
+          if [ "$(head -c4 /tmp/reassembled.wasm | xxd -p)" != "0061736d" ]; then
+            echo "FAIL: склейка не даёт валидный wasm (\0asm)"; exit 1
+          fi
+          printf "c2w-net-proxy.wasm:   "; head -c4 site/c2w-net-proxy.wasm | xxd
 
       - name: Upload result
         uses: actions/upload-artifact@v4
