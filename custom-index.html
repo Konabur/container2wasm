@@ -75,7 +75,7 @@
             return { mode: kv[1], param: kv[2] };
           }
         }
-        return null;
+        return { mode: 'browser' };  // по умолчанию — браузерный интернет (override: ?net=delegate или ?net=none)
       }
     </script>
   </body>

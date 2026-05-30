@@ -231,7 +231,7 @@ function getNetParam() {
             };
         }
     }
-    return null;
+    return { mode: 'browser' };  // по умолчанию — браузерный интернет (override: ?net=delegate или ?net=none)
 }
 
 function genmac(){
