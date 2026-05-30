@@ -23,13 +23,38 @@ jobs:
           mkdir -p site
           docker build --platform=linux/riscv64 -f my.Dockerfile -t myrootfs .
           c2w --target-arch=riscv64 myrootfs site/out.wasm
+          ls -lh site/out.wasm
 
       - name: Assemble site
         run: |
+          # JS-glue из примера (worker.js, stack.js, ws-delegate.js, stack-worker.js, xterm-pty.conf и т.д.)
           cp -R examples/wasi-browser/htdocs/* site/
+
+          # сетевой прокси-wasm
+          curl -sSL -o site/c2w-net-proxy.wasm \
+            "https://github.com/container2wasm/container2wasm/releases/download/v0.8.4/c2w-net-proxy.wasm"
+
+          # COOP/COEP через service worker
           curl -sSL -o site/coi-serviceworker.js \
-            https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/master/coi-serviceworker.min.js
+            "https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/master/coi-serviceworker.min.js"
+
+          # вендорим xterm локально (никаких CDN)
+          curl -sSL -o site/xterm.css      "https://cdn.jsdelivr.net/npm/xterm@4.17.0/css/xterm.css"
+          curl -sSL -o site/xterm.min.js   "https://cdn.jsdelivr.net/npm/xterm@4.17.0/lib/xterm.min.js"
+          curl -sSL -o site/xterm-pty.js   "https://cdn.jsdelivr.net/npm/xterm-pty@0.9.4/index.js"
+
+          # наш index.html поверх примерного
+          cp custom-index.html site/index.html
+
           touch site/.nojekyll
+
+          echo "=== проверка, что нет ссылок на http(s):// в html/js ==="
+          grep -rn "https\?://" site/*.html || echo "ok: внешних ссылок в html нет"
+
+          echo "=== проверка магического числа wasm ==="
+          for f in site/out.wasm site/c2w-net-proxy.wasm; do
+            printf "%s: " "$f"; head -c4 "$f" | xxd
+          done
 
       - name: Upload result
         uses: actions/upload-artifact@v4
