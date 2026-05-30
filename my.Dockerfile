@@ -1,4 +1,2 @@
-FROM riscv64/debian:stable
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    htop vim tmux curl less procps iproute2 ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+FROM riscv64/alpine:3.20
+RUN apk add --no-cache htop vim tmux curl less procps iproute2
