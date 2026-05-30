@@ -51,22 +51,52 @@ onmessage = (msg) => {
 
 // loadWasmFromParts склеивает out.wasm из кусков (см. split в build.yml).
 // Читает out.wasm.parts (число кусков), фетчит out.wasm.part000, part001, ...
-// и собирает их в один ArrayBuffer. Замена прямого fetch цельного wasm —
-// нужна из-за лимита 50 МБ/файл на GitVerse Pages.
+// и собирает в один ArrayBuffer. Качаем ПОСЛЕДОВАТЕЛЬНО с ретраями: GitVerse Pages
+// рвёт соединения при пачке параллельных запросов (NS_ERROR_NET_PARTIAL_TRANSFER /
+// NS_BINDING_ABORTED), плюс отдаёт куски не целиком — поэтому каждый кусок проверяем
+// по Content-Length и при недокачке/ошибке повторяем.
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function fetchPart(url, attempts) {
+    var attempt = function (a) {
+        return fetch(url, { credentials: 'same-origin', cache: 'no-store' })
+            .then((resp) => {
+                if (!resp.ok) throw new Error("HTTP " + resp.status);
+                var cl = resp.headers.get('content-length');
+                return resp.arrayBuffer().then((buf) => {
+                    if (cl && parseInt(cl, 10) !== buf.byteLength) {
+                        throw new Error("недокачка " + buf.byteLength + "/" + cl);
+                    }
+                    return buf;
+                });
+            })
+            .catch((e) => {
+                if (a + 1 >= attempts) throw e;
+                console.warn("retry " + url + " (" + (a + 1) + "/" + attempts + "): " + e);
+                return sleep(400 * (a + 1)).then(() => attempt(a + 1));
+            });
+    };
+    return attempt(0);
+}
+
 function loadWasmFromParts(baseUrl) {
-    return fetch(baseUrl + ".parts", { credentials: 'same-origin' })
+    return fetch(baseUrl + ".parts", { credentials: 'same-origin', cache: 'no-store' })
         .then((r) => r.text())
         .then((txt) => {
             var n = parseInt(txt.trim(), 10);
-            var tasks = [];
+            var bufs = [];
+            // последовательная загрузка: не заваливаем сервер параллельными запросами
+            var chain = Promise.resolve();
             for (var i = 0; i < n; i++) {
-                var idx = ("000" + i).slice(-3); // split -d -a 3 → part000, part001, ...
-                tasks.push(
-                    fetch(baseUrl + ".part" + idx, { credentials: 'same-origin' })
-                        .then((resp) => resp.arrayBuffer())
-                );
+                (function (idx) {
+                    var name = ("000" + idx).slice(-3); // split -d -a 3 → part000, part001, ...
+                    chain = chain.then(() => fetchPart(baseUrl + ".part" + name, 6))
+                        .then((buf) => { bufs[idx] = buf; });
+                })(i);
             }
-            return Promise.all(tasks).then((bufs) => {
+            return chain.then(() => {
                 var total = bufs.reduce((s, b) => s + b.byteLength, 0);
                 var out = new Uint8Array(total);
                 var off = 0;
