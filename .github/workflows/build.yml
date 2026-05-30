@@ -6,6 +6,10 @@ on:
         description: "Пересобрать out.wasm, игнорируя кэш"
         type: boolean
         default: false
+      publish_branch:
+        description: "Ветка для публикации site/ (пусто = только артефакт). Внимание: ветка перезаписывается!"
+        type: string
+        default: ""
 
 env:
   C2W_VERSION: v0.8.4
@@ -13,6 +17,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # нужно для пуша в ветку публикации
     steps:
       - uses: actions/checkout@v4
 
@@ -146,3 +152,33 @@ jobs:
         with:
           name: site
           path: site/
+
+      # Публикация содержимого site/ в указанную ветку (orphan, force-push — как gh-pages).
+      # Запускается только если задан publish_branch.
+      - name: Publish to branch
+        if: ${{ github.event.inputs.publish_branch != '' }}
+        env:
+          PUBLISH_BRANCH: ${{ github.event.inputs.publish_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # защита: не затирать исходную ветку
+          case "$PUBLISH_BRANCH" in
+            "$DEFAULT_BRANCH"|main|master)
+              echo "FAIL: отказ публиковать в исходную ветку '$PUBLISH_BRANCH' (это force-push)"; exit 1 ;;
+          esac
+
+          touch site/.nojekyll
+          git init -q
+          git checkout -q -b "$PUBLISH_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Deploy site ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+
+          REMOTE_HOST="${GITHUB_SERVER_URL#https://}"
+          git push -f \
+            "https://x-access-token:${GH_TOKEN}@${REMOTE_HOST}/${GITHUB_REPOSITORY}.git" \
+            "HEAD:${PUBLISH_BRANCH}"
+          echo "Опубликовано в ветку '$PUBLISH_BRANCH'"

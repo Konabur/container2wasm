@@ -1,0 +1,48 @@
+name: sync-from-github
+# Зеркалирование GitHub-оригинала в этот GitVerse-репозиторий.
+# У GitVerse нет штатного pull-mirror, поэтому тянем сами:
+#   clone --mirror с GitHub  ->  push веток/тегов в GitVerse (с --prune).
+#
+# Файл лежит в .gitverse/workflows/ и исполняется ТОЛЬКО GitVerse CI.
+# GitHub Actions читает лишь .github/, так что на GitHub этот workflow не запускается
+# и при этом присутствует в обоих репозиториях — значит, переживает синхронизацию
+# (push не удалит сам себя на GitVerse, т.к. файл есть и на GitHub).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror GitHub -> GitVerse
+        env:
+          UPSTREAM_URL: ${{ vars.UPSTREAM_URL }}   # GitHub-оригинал (переменная репозитория, задаётся 1 раз)
+          SSH_KEY: ${{ secrets.SSH_KEY }}          # приватный SSH-ключ (секрет); публичный — deploy key в GitVerse с правом записи
+        run: |
+          set -e
+          if [ -z "$SSH_KEY" ] || [ -z "$UPSTREAM_URL" ]; then
+            echo "FAIL: задайте переменную UPSTREAM_URL и секрет SSH_KEY"; exit 1
+          fi
+
+          # настраиваем SSH-ключ
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_mirror
+          chmod 600 ~/.ssh/id_mirror
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_mirror -o StrictHostKeyChecking=accept-new"
+
+          echo "Источник:   $UPSTREAM_URL"
+          echo "Назначение: git@gitverse.ru:${{ gitverse.repository }}.git"
+
+          # 1) полная зеркальная копия оригинала (все ветки и теги)
+          git clone --mirror "$UPSTREAM_URL" repo.git
+          cd repo.git
+
+          # 2) приводим ветки и теги GitVerse в точное соответствие с GitHub.
+          #    --prune удалит на GitVerse ветки/теги, которых уже нет на GitHub.
+          #    Толкаем только refs/heads и refs/tags (не трогаем pull/* и прочие служебные refs).
+          git push --force --prune "git@gitverse.ru:${{ gitverse.repository }}.git" \
+            "refs/heads/*:refs/heads/*" \
+            "refs/tags/*:refs/tags/*"
+
+          echo "Готово: GitVerse синхронизирован с $UPSTREAM_URL"
