@@ -110,10 +110,15 @@ jobs:
           touch site/.nojekyll
 
       - name: Split wasm
+        env:
+          CHUNK_SIZE: ${{ vars.CHUNK_SIZE }}   # переменная репозитория; пусто → дефолт 2500k
         run: |
-          # лимит GitVerse 50 МБ/файл → дробим по 45 МБ; split -d -a 3 → part000, part001, ...
+          # GitVerse Pages обрывает отдачу больших файлов (~5 МБ) → дробим мелко.
+          # Размер куска — переменная CHUNK_SIZE (дефолт 2500k); split -d -a 3 → part000, part001, ...
           # читаем из кэша (c2w-cache/out.wasm), пишем куски в site/ — целого wasm в site/ не будет
-          split -b 45m -d -a 3 c2w-cache/out.wasm site/out.wasm.part
+          SIZE="${CHUNK_SIZE:-2500k}"
+          echo "chunk size: $SIZE"
+          split -b "$SIZE" -d -a 3 c2w-cache/out.wasm site/out.wasm.part
           ls site/out.wasm.part* | wc -l | tr -d ' ' > site/out.wasm.parts
           echo "parts: $(cat site/out.wasm.parts)"
           ls -lh site/out.wasm.part*
