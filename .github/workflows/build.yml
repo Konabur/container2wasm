@@ -18,7 +18,7 @@ jobs:
       - name: Build wasm
         run: |
           mkdir -p site
-          docker build --platform=linux/riscv64 -t myrootfs .
+          docker build --platform=linux/riscv64 -f my.Dockerfile -t myrootfs .
           c2w --target-arch=riscv64 myrootfs site/out.wasm
 
       - name: Assemble site
