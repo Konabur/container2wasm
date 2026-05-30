@@ -1,0 +1,35 @@
+name: build-wasm
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install c2w
+        run: |
+          curl -sSL -o c2w.tar.gz \
+            "https://github.com/container2wasm/container2wasm/releases/download/v0.8.4/container2wasm-v0.8.4-linux-amd64.tar.gz"
+          tar xzf c2w.tar.gz
+          sudo install -m755 c2w /usr/local/bin/c2w
+
+      - name: Build wasm
+        run: |
+          mkdir -p site
+          docker build --platform=linux/riscv64 -t myrootfs .
+          c2w --target-arch=riscv64 myrootfs site/out.wasm
+
+      - name: Assemble site
+        run: |
+          cp -R examples/wasi-browser/htdocs/* site/
+          curl -sSL -o site/coi-serviceworker.js \
+            https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/master/coi-serviceworker.min.js
+          touch site/.nojekyll
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: site/
