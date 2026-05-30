@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <script src="coi-serviceworker.js"></script>
+    <meta charset="utf-8">
+    <title>container + WASI on browser</title>
+    <link rel="stylesheet" href="xterm.css">
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; }
+      #terminal { height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <div id="terminal"></div>
+    <script src="xterm.min.js"></script>
+    <script src="xterm-pty.js"></script>
+    <script src="./stack.js"></script>
+    <script src="./ws-delegate.js"></script>
+    <script>
+      const xterm = new Terminal();
+      xterm.open(document.getElementById("terminal"));
+      const { master, slave } = openpty();
+      let termios = slave.ioctl("TCGETS");
+      termios.iflag &= ~(ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+      termios.oflag &= ~(OPOST);
+      termios.lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+      slave.ioctl("TCSETS", new Termios(termios.iflag, termios.oflag, termios.cflag, termios.lflag, termios.cc));
+      xterm.loadAddon(master);
+
+      // --- копирование/вставка ---
+      xterm.attachCustomKeyEventHandler((e) => {
+        if (e.type !== "keydown") return true;
+        if (e.ctrlKey && e.shiftKey && e.code === "KeyV") {
+          navigator.clipboard.readText().then((t) => master.write(t));
+          return false;
+        }
+        if (e.ctrlKey && e.shiftKey && e.code === "KeyC") {
+          const sel = xterm.getSelection();
+          if (sel) navigator.clipboard.writeText(sel);
+          return false;
+        }
+        return true;
+      });
+      xterm.element.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        navigator.clipboard.readText().then((t) => master.write(t));
+      });
+
+      const worker = new Worker("./worker.js" + location.search);
+      const workerImage = location.origin + "/out.wasm";
+      const netProxy = location.origin + "/c2w-net-proxy.wasm";
+
+      let nwStack;
+      const netParam = getNetParam();
+      if (netParam) {
+        if (netParam.mode === 'delegate') {
+          nwStack = delegate(worker, workerImage, netParam.param);
+        } else if (netParam.mode === 'browser') {
+          nwStack = newStack(worker, workerImage,
+            new Worker("./stack-worker.js" + location.search), netProxy);
+        }
+      }
+      if (!nwStack) {
+        worker.postMessage({ type: "init", imagename: workerImage });
+      }
+      new TtyServer(slave).start(worker, nwStack);
+
+      function getNetParam() {
+        const vars = location.search.substring(1).split('&');
+        for (const v of vars) {
+          const kv = v.split('=');
+          if (decodeURIComponent(kv[0]) === 'net') {
+            return { mode: kv[1], param: kv[2] };
+          }
+        }
+        return null;
+      }
+    </script>
+  </body>
+</html>
