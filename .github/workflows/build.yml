@@ -10,6 +10,10 @@ on:
         description: "Ветка для публикации site/ (пусто = только артефакт). Внимание: ветка перезаписывается!"
         type: string
         default: ""
+      chunk_size:
+        description: "Размер куска out.wasm (split: k/m). Пусто → переменная CHUNK_SIZE → дефолт 2500k."
+        type: string
+        default: ""
 
 env:
   C2W_VERSION: v0.8.4
@@ -111,12 +115,14 @@ jobs:
 
       - name: Split wasm
         env:
-          CHUNK_SIZE: ${{ vars.CHUNK_SIZE }}   # переменная репозитория; пусто → дефолт 2500k
+          INPUT_CHUNK_SIZE: ${{ github.event.inputs.chunk_size }}  # приоритет
+          CHUNK_SIZE: ${{ vars.CHUNK_SIZE }}                       # переменная репозитория
         run: |
           # GitVerse Pages обрывает отдачу больших файлов (~5 МБ) → дробим мелко.
-          # Размер куска — переменная CHUNK_SIZE (дефолт 2500k); split -d -a 3 → part000, part001, ...
+          # Размер куска: инпут chunk_size → переменная CHUNK_SIZE → дефолт 2500k.
+          # split -d -a 3 → part000, part001, ...
           # читаем из кэша (c2w-cache/out.wasm), пишем куски в site/ — целого wasm в site/ не будет
-          SIZE="${CHUNK_SIZE:-2500k}"
+          SIZE="${INPUT_CHUNK_SIZE:-${CHUNK_SIZE:-2500k}}"
           echo "chunk size: $SIZE"
           split -b "$SIZE" -d -a 3 c2w-cache/out.wasm site/out.wasm.part
           ls site/out.wasm.part* | wc -l | tr -d ' ' > site/out.wasm.parts
