@@ -1,6 +1,14 @@
 name: build-wasm
 on:
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Пересобрать out.wasm, игнорируя кэш"
+        type: boolean
+        default: false
+
+env:
+  C2W_VERSION: v0.8.4
 
 jobs:
   build:
@@ -8,31 +16,76 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Кэшируем готовый out.wasm по версии c2w + хешу my.Dockerfile.
+      # Пока контейнер не менялся — пропускаем QEMU + docker build + c2w (самое долгое).
+      - name: Cache built wasm
+        id: wasmcache
+        uses: actions/cache@v4
+        with:
+          # вне site/ — иначе split/удаление сломали бы post-job сохранение кэша
+          path: c2w-cache/out.wasm
+          key: out-wasm-${{ env.C2W_VERSION }}-${{ hashFiles('my.Dockerfile') }}
+
+      - name: Set build flag
+        id: need
+        run: |
+          if [ "${{ steps.wasmcache.outputs.cache-hit }}" = "true" ] \
+             && [ "${{ github.event.inputs.force_rebuild }}" != "true" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "out.wasm взят из кэша — сборку контейнера пропускаем"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "out.wasm будет собран"
+          fi
+
       - name: Setup QEMU
+        if: steps.need.outputs.build == 'true'
         uses: docker/setup-qemu-action@v3
+        with:
+          platforms: riscv64
+
+      - name: Setup Buildx
+        if: steps.need.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
 
       - name: Install c2w
+        if: steps.need.outputs.build == 'true'
         run: |
           curl -sSL -o c2w.tar.gz \
-            "https://github.com/container2wasm/container2wasm/releases/download/v0.8.4/container2wasm-v0.8.4-linux-amd64.tar.gz"
+            "https://github.com/container2wasm/container2wasm/releases/download/${C2W_VERSION}/container2wasm-${C2W_VERSION}-linux-amd64.tar.gz"
           tar xzf c2w.tar.gz
           sudo install -m755 c2w /usr/local/bin/c2w
 
-      - name: Build wasm
+      # docker build с GHA layer-cache: эмулированный apk берётся из кэша слоёв,
+      # когда Dockerfile не менялся (например, бамп версии c2w).
+      - name: Build rootfs image
+        if: steps.need.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: my.Dockerfile
+          platforms: linux/riscv64
+          tags: myrootfs
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Convert to wasm
+        if: steps.need.outputs.build == 'true'
         run: |
-          mkdir -p site
-          docker build --platform=linux/riscv64 -f my.Dockerfile -t myrootfs .
-          c2w --target-arch=riscv64 myrootfs site/out.wasm
-          ls -lh site/out.wasm
+          mkdir -p c2w-cache
+          c2w --target-arch=riscv64 myrootfs c2w-cache/out.wasm
+          ls -lh c2w-cache/out.wasm
 
       - name: Assemble site
         run: |
+          mkdir -p site
           # JS-glue из примера (worker.js, stack.js, ws-delegate.js, stack-worker.js, xterm-pty.conf и т.д.)
           cp -R examples/wasi-browser/htdocs/* site/
 
           # сетевой прокси-wasm
           curl -sSL -o site/c2w-net-proxy.wasm \
-            "https://github.com/container2wasm/container2wasm/releases/download/v0.8.4/c2w-net-proxy.wasm"
+            "https://github.com/container2wasm/container2wasm/releases/download/${C2W_VERSION}/c2w-net-proxy.wasm"
 
           # COOP/COEP через service worker
           curl -sSL -o site/coi-serviceworker.js \
@@ -52,13 +105,12 @@ jobs:
 
       - name: Split wasm
         run: |
-          cd site
           # лимит GitVerse 50 МБ/файл → дробим по 45 МБ; split -d -a 3 → part000, part001, ...
-          split -b 45m -d -a 3 out.wasm out.wasm.part
-          ls out.wasm.part* | wc -l | tr -d ' ' > out.wasm.parts
-          echo "parts: $(cat out.wasm.parts)"
-          ls -lh out.wasm.part*
-          rm -f out.wasm
+          # читаем из кэша (c2w-cache/out.wasm), пишем куски в site/ — целого wasm в site/ не будет
+          split -b 45m -d -a 3 c2w-cache/out.wasm site/out.wasm.part
+          ls site/out.wasm.part* | wc -l | tr -d ' ' > site/out.wasm.parts
+          echo "parts: $(cat site/out.wasm.parts)"
+          ls -lh site/out.wasm.part*
 
       - name: Verify
         run: |
